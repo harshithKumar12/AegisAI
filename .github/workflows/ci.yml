@@ -1,0 +1,33 @@
+name: AegisAI StadiumOS CI Pipeline
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Linter and Type Checks
+        run: npm run lint
+
+      - name: Run Formatter Check
+        run: npm run format
+
+      - name: Run Automated Vitest Suite
+        run: npm run test

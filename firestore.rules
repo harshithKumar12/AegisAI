@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Definitions & Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role'])
+        && data.keys().size() == 4
+        && data.uid is string && data.uid.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && data.displayName is string && data.displayName.size() <= 100
+        && data.role in ['admin', 'coordinator', 'supervisor'];
+    }
+
+    function isValidIncident(data) {
+      return data.keys().hasAll(['id', 'type', 'location', 'title', 'severity', 'description', 'status'])
+        && data.id is string && data.id.size() <= 128
+        && data.type in ['medical', 'security', 'traffic', 'operations', 'resource']
+        && data.location is string && data.location.size() <= 200
+        && data.title is string && data.title.size() <= 100
+        && data.severity in ['low', 'medium', 'high', 'critical']
+        && data.description is string && data.description.size() <= 1000
+        && data.status in ['active', 'resolving', 'resolved'];
+    }
+
+    // 2. Users Collection Rules
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'supervisor']);
+      allow list: if isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'supervisor'];
+      
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(incoming());
+      
+      // Enforce Action-based Updates preventing self-promotion of roles
+      allow update: if isSignedIn() && isOwner(userId) && isValidUser(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email'])
+        && incoming().role == existing().role;
+        
+      allow delete: if isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // 3. Incidents Collection Rules
+    match /incidents/{incidentId} {
+      // Any authenticated user of the system can read incidents
+      allow get, list: if isSignedIn();
+      
+      // Only administrators or coordinators can report (create) new incidents
+      allow create: if isSignedIn() 
+        && isValidId(incidentId) 
+        && isValidIncident(incoming())
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'coordinator'];
+
+      // Specific state updates
+      allow update: if isSignedIn() 
+        && isValidIncident(incoming())
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'coordinator', 'supervisor']
+        && (
+          // Action: Shift/Resolve Incident Status
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'recommendedAction', 'assignedAgent'])
+        );
+
+      allow delete: if isSignedIn() 
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+  }
+}

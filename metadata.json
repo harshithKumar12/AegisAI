@@ -1,0 +1,6 @@
+{
+  "name": "AegisAI StadiumOS",
+  "description": "The AI Operating System for the FIFA World Cup 2026. Enhancing smart stadium navigation, crowd intelligence, operations, security, and emergency services through a collaborative Multi-Agent AI system and interactive 3D Digital Twin.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

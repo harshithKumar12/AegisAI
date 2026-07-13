@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Registered stadium coordinator or supervisor account.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin", "coordinator", "supervisor"] }
+      },
+      "required": ["uid", "email", "displayName", "role"]
+    },
+    "Incident": {
+      "title": "Incident Record",
+      "description": "Stadium operations safety or operational incident.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["medical", "security", "traffic", "operations", "resource"] },
+        "location": { "type": "string", "maxLength": 200 },
+        "title": { "type": "string", "maxLength": 100 },
+        "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "description": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["active", "resolving", "resolved"] },
+        "timestamp": { "type": "string", "maxLength": 50 },
+        "recommendedAction": { "type": "string", "maxLength": 1000 },
+        "assignedAgent": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "type", "location", "title", "severity", "description", "status"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profile records indexed by Auth UID."
+    },
+    "incidents/{incidentId}": {
+      "schema": "Incident",
+      "description": "Active stadium incident records."
+    }
+  }
+}

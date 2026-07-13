@@ -1,0 +1,13 @@
+# AegisAI StadiumOS — Repository Code Owners
+
+# Global owners for overall workspace sanity
+*                           @aegis-core-engineering
+
+# Backend, simulation engine, and API proxy owners
+/server.ts                  @aegis-infra-leads
+/src/test/                  @aegis-quality-engineers
+
+# Security, firebase auth, and access control rules
+/firestore.rules            @aegis-security-leads
+/SECURITY.md                @aegis-security-leads
+/firebase-blueprint.json    @aegis-security-leads
