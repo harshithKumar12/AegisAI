@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import { 
   Incident, 
   DigitalTwinState 
@@ -24,7 +24,7 @@ interface DigitalTwinProps {
   onActiveLayerChange?: (layer: 'heat' | 'gates' | 'facilities' | 'security') => void;
 }
 
-export default function DigitalTwin({ 
+function DigitalTwin({ 
   state, 
   onApplyAction: _onApplyAction, 
   selectedIncident, 
@@ -103,12 +103,22 @@ export default function DigitalTwin({
 
   const content = (
     <>
+      {/* Screen Reader accessible description of the stadium map live state */}
+      <div className="sr-only" aria-live="polite">
+        Interactive 2D Digital Twin Map for {state.stadiumName}. 
+        The active layer context is currently set to the {activeLayer === 'heat' ? 'Crowd Density Heatmap' : activeLayer === 'gates' ? 'Ingress Channels Telemetry' : activeLayer === 'facilities' ? 'Concessions Status' : 'Tactical Security Corridors'} layer. 
+        Average stadium crowd density load is {state.crowdDensity} percent. 
+        There are {state.activeIncidents.filter(inc => inc.status !== 'resolved').length} active incidents requiring operational response: {
+          state.activeIncidents.filter(inc => inc.status !== 'resolved').map(inc => `${inc.title} at ${inc.location} classified as ${inc.severity} severity`).join(', ') || 'None'
+        }.
+      </div>
+
       {/* Top Controls panel (Left Grid of layout) */}
       <div className={`flex flex-col gap-4 mb-6 w-full ${isMaximized ? 'md:w-1/3 md:pr-6 md:border-r md:border-slate-800 shrink-0' : ''}`}>
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-bold tracking-tight text-slate-100 flex items-center gap-2">
-              <span className="relative flex h-3 w-3">
+              <span className="relative flex h-3 w-3" aria-hidden="true">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
               </span>
@@ -119,10 +129,11 @@ export default function DigitalTwin({
           <div className="flex items-center gap-1">
             <button 
               onClick={() => setIsMaximized(!isMaximized)}
-              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition cursor-pointer"
+              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-100 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition cursor-pointer"
               title="Toggle Layout Maximization"
+              aria-label="Toggle Layout Maximization"
             >
-              {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              {isMaximized ? <Minimize2 className="w-4 h-4" aria-hidden="true" /> : <Maximize2 className="w-4 h-4" aria-hidden="true" />}
             </button>
           </div>
         </div>
@@ -135,40 +146,49 @@ export default function DigitalTwin({
           </div>
           <button 
             onClick={() => setIsAIOverlayActive(!isAIOverlayActive)}
-            className={`px-3 py-1.5 rounded-xl text-[10px] font-bold tracking-wide uppercase font-mono border transition-all cursor-pointer ${isAIOverlayActive ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.15)]' : 'bg-slate-900 border-slate-850 text-slate-500'}`}
+            className={`px-3 py-1.5 rounded-xl text-[10px] font-bold tracking-wide uppercase font-mono border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer ${isAIOverlayActive ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.15)]' : 'bg-slate-900 border-slate-850 text-slate-500'}`}
+            aria-label={isAIOverlayActive ? "Deactivate AI Cognitive Layer" : "Activate AI Cognitive Layer"}
           >
             {isAIOverlayActive ? "ON: COGNITIVE OS" : "OFF: RAW PHYSICAL"}
           </button>
         </div>
 
         {/* Tactical layers selector tab stack */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Map Data Layers">
           <button 
             onClick={() => setActiveLayer('heat')}
-            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${activeLayer === 'heat' ? 'bg-orange-950/40 border-orange-500/50 text-orange-400 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
+            role="tab"
+            aria-selected={activeLayer === 'heat'}
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer ${activeLayer === 'heat' ? 'bg-orange-950/40 border-orange-500/50 text-orange-400 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
           >
-            <Users className="w-3.5 h-3.5" />
+            <Users className="w-3.5 h-3.5" aria-hidden="true" />
             Crowd Density
           </button>
           <button 
             onClick={() => setActiveLayer('gates')}
-            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${activeLayer === 'gates' ? 'bg-blue-950/40 border-blue-500/50 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
+            role="tab"
+            aria-selected={activeLayer === 'gates'}
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer ${activeLayer === 'gates' ? 'bg-blue-950/40 border-blue-500/50 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
           >
-            <Compass className="w-3.5 h-3.5" />
+            <Compass className="w-3.5 h-3.5" aria-hidden="true" />
             Ingress Channels
           </button>
           <button 
             onClick={() => setActiveLayer('facilities')}
-            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${activeLayer === 'facilities' ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
+            role="tab"
+            aria-selected={activeLayer === 'facilities'}
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer ${activeLayer === 'facilities' ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
           >
-            <Utensils className="w-3.5 h-3.5" />
+            <Utensils className="w-3.5 h-3.5" aria-hidden="true" />
             Concessions
           </button>
           <button 
             onClick={() => setActiveLayer('security')}
-            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${activeLayer === 'security' ? 'bg-rose-950/40 border-rose-500/50 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
+            role="tab"
+            aria-selected={activeLayer === 'security'}
+            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer ${activeLayer === 'security' ? 'bg-rose-950/40 border-rose-500/50 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.15)]' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'}`}
           >
-            <Shield className="w-3.5 h-3.5" />
+            <Shield className="w-3.5 h-3.5" aria-hidden="true" />
             Tactical Security
           </button>
         </div>
@@ -181,17 +201,19 @@ export default function DigitalTwin({
             <div className="flex items-center gap-1.5">
               <button 
                 onClick={() => setZoomLevel(Math.min(2.5, zoomLevel + 0.2))}
-                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 title="Zoom In"
+                aria-label="Zoom In"
               >
-                <ZoomIn className="w-3.5 h-3.5" />
+                <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
               <button 
                 onClick={() => setZoomLevel(Math.max(0.8, zoomLevel - 0.2))}
-                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 title="Zoom Out"
+                aria-label="Zoom Out"
               >
-                <ZoomOut className="w-3.5 h-3.5" />
+                <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
               <span className="text-[10px] font-mono text-slate-400 bg-slate-900 px-2 py-1 rounded">
                 Scale: {Math.round(zoomLevel * 100)}%
@@ -199,12 +221,13 @@ export default function DigitalTwin({
             </div>
 
             {/* Quick-Sector panning buttons */}
-            <div className="flex flex-wrap gap-1 max-w-[140px] justify-end">
+            <div className="flex flex-wrap gap-1 max-w-[140px] justify-end" role="group" aria-label="Stadium Focus Sectors">
               {(['all', 'north', 'east', 'south', 'west'] as const).map((sec) => (
                 <button
                   key={sec}
                   onClick={() => handleSectorPan(sec)}
-                  className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-mono font-bold border transition ${panSector === sec ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                  className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-mono font-bold border transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${panSector === sec ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                  aria-label={`Focus map on ${sec} sector`}
                 >
                   {sec}
                 </button>
@@ -231,22 +254,22 @@ export default function DigitalTwin({
                 <span className="font-mono text-orange-400 font-bold">{state.crowdDensity}%</span>
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-300 bg-slate-900/40 p-2 rounded-xl border border-slate-900">
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-500/20 border border-emerald-500/40"></span>Low</span>
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-500/20 border border-amber-500/40"></span>Normal</span>
-                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-rose-500/20 border border-rose-500/40 animate-pulse"></span>Congestion</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-500/20 border border-emerald-500/40"></span>✓ Low</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-500/20 border border-amber-500/40"></span>⚠ Normal</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-rose-500/20 border border-rose-500/40 animate-pulse"></span>🚨 Congested</span>
               </div>
             </div>
           )}
 
           {activeLayer === 'gates' && (
-            <div className="space-y-1.5 text-xs text-slate-300">
+            <div className="space-y-1.5 text-xs text-slate-300" role="region" aria-label="Gate Telemetry">
               {state.gateStatuses.map(g => (
                 <div key={g.id} className="flex justify-between items-center bg-slate-900/30 p-2 rounded-xl border border-slate-850">
                   <span className="font-semibold">{g.name}:</span>
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-slate-400">{g.flowRate} ppm</span>
                     <span className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] ${g.status === 'congested' ? 'bg-rose-950 text-rose-400 border border-rose-900/30' : 'bg-slate-800 text-emerald-400'}`}>
-                      {g.waitTime}m wait
+                      {g.status === 'congested' ? '🚨 Congested ' : '✓ '} {g.waitTime}m wait
                     </span>
                   </div>
                 </div>
@@ -255,12 +278,12 @@ export default function DigitalTwin({
           )}
 
           {activeLayer === 'facilities' && (
-            <div className="grid grid-cols-1 gap-1.5 text-xs text-slate-300">
+            <div className="grid grid-cols-1 gap-1.5 text-xs text-slate-300" role="region" aria-label="Facility Occupancy">
               {state.facilityStatuses.map(f => (
                 <div key={f.id} className="flex justify-between items-center bg-slate-900/20 p-2 rounded-xl border border-slate-900">
                   <span className="truncate">{f.name}:</span>
                   <span className={`font-mono font-bold ${f.status === 'full' || f.status === 'crowded' ? 'text-rose-400' : 'text-emerald-400'}`}>
-                    {f.occupancy}% ({f.waitLabel})
+                    {f.status === 'full' || f.status === 'crowded' ? '🚨 ' : '✓ '} {f.occupancy}% ({f.waitLabel})
                   </span>
                 </div>
               ))}
@@ -315,7 +338,12 @@ export default function DigitalTwin({
           
           {/* Zoom and pan boundary wrapper */}
           <div style={getTransformStyle()} className="w-full h-full">
-            <svg viewBox="0 0 400 300" className="w-full h-full drop-shadow-[0_0_35px_rgba(30,41,59,0.45)]">
+            <svg 
+              viewBox="0 0 400 300" 
+              className="w-full h-full drop-shadow-[0_0_35px_rgba(30,41,59,0.45)]"
+              role="img"
+              aria-label="Interactive 2D Digital Twin stadium floor layout showing real-time sector loads, pedestrian flow channels, facilities, and active incident beacons."
+            >
               
               {/* Outer circular stadium perimeter guides */}
               <circle cx="200" cy="140" r="130" fill="none" stroke="#111827" strokeWidth="4" />
@@ -502,3 +530,5 @@ export default function DigitalTwin({
     </div>
   );
 }
+
+export default memo(DigitalTwin);

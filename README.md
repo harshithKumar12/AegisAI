@@ -85,19 +85,25 @@ Below is the verified project repository tree representing the engineering scaff
 ```text
 .
 ├── .env.example                # Example environment configuration for backend secrets
+├── .github/                    # GitHub workflow configurations
 ├── .gitignore                  # Git ignore rules for build artifacts and node modules
+├── .prettierrc.json            # Code formatting rules for Prettier
 ├── CODEOWNERS                  # Strict code ownership assignments
 ├── CONTRIBUTING.md             # Developer guidelines and quality standards
 ├── GAP_LIST.md                 # Gap analysis report
-├── README.md                   # Core product and architectual documentation
+├── README.md                   # Core product and architectural documentation
 ├── SECURITY.md                 # Security policy, threat model, and vulnerability disclosure
+├── assets/                     # Graphic assets and design resources
+├── docs/                       # Project documentation and guidelines
 ├── eslint.config.js            # ESLint v9 flat-file style rules and parser settings
 ├── firebase-applet-config.json # Firebase connection credentials
 ├── firebase-blueprint.json     # Firestore collection schema definitions
 ├── firestore.rules             # Secure Attribute-Based Access Control rules
 ├── index.html                  # Standard Single Page Application index entry point
 ├── metadata.json               # Application capability descriptor and frame permissions
+├── package-lock.json           # Package lock file
 ├── package.json                # Project dependencies, scripts, and build tasks
+├── security_spec.md            # Firestore Security Hardening Specification (Phase 0)
 ├── server.ts                   # Production-grade Node.js/Express telemetry & API server
 ├── tsconfig.json               # TypeScript configuration parameters
 ├── vite.config.ts              # Vite asset bundler configuration
@@ -126,5 +132,7 @@ Below is the verified project repository tree representing the engineering scaff
     │   └── firebase.ts         # Firebase SDK initialization and client-side helpers
     │
     └── test/
-        └── stadium.test.ts     # Automated unit & integration Vitest suite
+        ├── mocks/              # Mock definitions for testing environment
+        ├── stadium.test.ts     # Automated unit & integration Vitest suite
+        └── firestore.rules.test.ts # Dirty Dozen rules payload validation suite
 ```

@@ -36,9 +36,13 @@ export default function AegisDocSheet() {
     setRagAnswer(null);
     setRagSources([]);
     try {
+      const token = (window as any).aegisCsrfToken || '';
       const response = await fetch('/api/playbook-rag', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Aegis-CSRF-Token': token
+        },
         body: JSON.stringify({ query: queryText })
       });
       const data = await response.json();

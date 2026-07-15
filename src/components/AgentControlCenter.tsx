@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, memo } from 'react';
 import { 
   AgentType, 
   Agent, 
@@ -31,6 +31,8 @@ interface AgentControlCenterProps {
   onStateUpdate: (newState: DigitalTwinState) => void;
   selectedAgent?: AgentType;
   onSelectAgent?: (agent: AgentType) => void;
+  activeRole?: 'command' | 'fan' | 'docs';
+  user?: any;
 }
 
 const AGENTS_METADATA: Record<AgentType, Agent> = {
@@ -174,11 +176,13 @@ const SUGGESTED_QUERIES: Record<AgentType, string[]> = {
   ]
 };
 
-export default function AgentControlCenter({ 
+function AgentControlCenter({ 
   stadiumState, 
   onStateUpdate: _onStateUpdate,
   selectedAgent: controlledSelectedAgent,
-  onSelectAgent
+  onSelectAgent,
+  activeRole,
+  user
 }: AgentControlCenterProps) {
   const [localSelectedAgent, setLocalSelectedAgent] = useState<AgentType>('crowd');
   const selectedAgent = controlledSelectedAgent !== undefined ? controlledSelectedAgent : localSelectedAgent;
@@ -363,13 +367,19 @@ export default function AgentControlCenter({
     setLoading(true);
 
     try {
+      const token = (window as any).aegisCsrfToken || '';
       const response = await fetch('/api/chat-agent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Aegis-CSRF-Token': token
+        },
         body: JSON.stringify({
           agentId: selectedAgent,
           message: msgText,
-          contextState: stadiumState
+          contextState: stadiumState,
+          role: activeRole || 'fan',
+          operator: user?.displayName || user?.email || "Command Center Operator"
         })
       });
 
@@ -742,3 +752,5 @@ export default function AgentControlCenter({
     </div>
   );
 }
+
+export default memo(AgentControlCenter);

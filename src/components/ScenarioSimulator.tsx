@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import { DigitalTwinState } from '../types';
 import { 
   Play, 
@@ -15,6 +15,7 @@ interface ScenarioSimulatorProps {
   stadiumState: DigitalTwinState;
   onStateUpdate: (newState: DigitalTwinState) => void;
   onTriggerLog: (log: string) => void;
+  user?: any;
 }
 
 interface SimulatedScenario {
@@ -51,7 +52,7 @@ const DEFAULT_SCENARIOS: SimulatedScenario[] = [
   }
 ];
 
-export default function ScenarioSimulator({ stadiumState: _stadiumState, onStateUpdate, onTriggerLog }: ScenarioSimulatorProps) {
+function ScenarioSimulator({ stadiumState: _stadiumState, onStateUpdate, onTriggerLog, user }: ScenarioSimulatorProps) {
   const [selectedScenario, setSelectedScenario] = useState<SimulatedScenario>(DEFAULT_SCENARIOS[0]);
   const [customName, setCustomName] = useState('');
   const [customDesc, setCustomDesc] = useState('');
@@ -74,12 +75,17 @@ export default function ScenarioSimulator({ stadiumState: _stadiumState, onState
     const desc = isCustomMode ? customDesc : selectedScenario.description;
 
     try {
+      const token = (window as any).aegisCsrfToken || '';
       const response = await fetch('/api/predict-scenario', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Aegis-CSRF-Token': token
+        },
         body: JSON.stringify({
           scenarioName: name,
-          scenarioDescription: desc
+          scenarioDescription: desc,
+          operator: user?.displayName || user?.email || "Command Center Operator"
         })
       });
 
@@ -109,7 +115,17 @@ export default function ScenarioSimulator({ stadiumState: _stadiumState, onState
   const handleResetSimulation = async () => {
     setRunning(true);
     try {
-      const response = await fetch('/api/reset-state', { method: 'POST' });
+      const token = (window as any).aegisCsrfToken || '';
+      const response = await fetch('/api/reset-state', { 
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Aegis-CSRF-Token': token
+        },
+        body: JSON.stringify({
+          operator: user?.displayName || user?.email || "Command Center Operator"
+        })
+      });
       const data = await response.json();
       onStateUpdate(data);
       setAgentLogs(null);
@@ -293,3 +309,5 @@ export default function ScenarioSimulator({ stadiumState: _stadiumState, onState
     </div>
   );
 }
+
+export default memo(ScenarioSimulator);

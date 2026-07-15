@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense, useCallback } from 'react';
 import { 
   DigitalTwinState, 
   Incident, 
@@ -10,16 +10,23 @@ import UserAuth from './components/UserAuth';
 import DigitalTwin from './components/DigitalTwin';
 import AgentControlCenter from './components/AgentControlCenter';
 import ScenarioSimulator from './components/ScenarioSimulator';
-import AegisDocSheet from './components/AegisDocSheet';
+import { ErrorBoundary } from './components/ErrorBoundary';
+
+import KPICardGrid from './components/KPICardGrid';
+import AIDecisionBanner from './components/AIDecisionBanner';
+import IncidentLogPanel from './components/IncidentLogPanel';
+import RecommendationsPanel from './components/RecommendationsPanel';
+import TelemetryFeed from './components/TelemetryFeed';
+
+const AegisDocSheet = lazy(() => import('./components/AegisDocSheet'));
+
 import { 
   AlertTriangle, 
   BookOpen, 
-  Sparkles, 
   Cpu, 
   Layers, 
   Smartphone, 
   Volume2, 
-  CheckCircle,
   Trophy,
   LogOut
 } from 'lucide-react';
@@ -248,8 +255,18 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch current stadium state from backend on mount
+  // Fetch CSRF token and current stadium state on mount
   useEffect(() => {
+    const fetchCsrfToken = async () => {
+      try {
+        const response = await fetch('/api/csrf-token');
+        const data = await response.json();
+        (window as any).aegisCsrfToken = data.token;
+      } catch (err) {
+        console.error("Failed to fetch CSRF token:", err);
+      }
+    };
+    fetchCsrfToken();
     fetchStadiumState();
     // Poll state every 12 seconds to mimic live telemetry syncing
     const interval = setInterval(fetchStadiumState, 12000);
@@ -269,22 +286,27 @@ export default function App() {
     }
   };
 
-  const addLog = (logMessage: string) => {
+  const addLog = useCallback((logMessage: string) => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setSystemLogs(prev => [`[${timestamp}] ${logMessage}`, ...prev.slice(0, 8)]);
-  };
+  }, []);
 
   // Perform operational adjustment
-  const handleApplyAction = async (actionType: string, params: { gateId?: string, incidentId?: string }) => {
+  const handleApplyAction = useCallback(async (actionType: string, params: { gateId?: string, incidentId?: string }) => {
     addLog(`Executing Action Trigger: ${actionType.toUpperCase()} ${params.gateId || params.incidentId || ''}`);
     try {
+      const token = (window as any).aegisCsrfToken || '';
       const response = await fetch('/api/apply-recommendation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Aegis-CSRF-Token': token
+        },
         body: JSON.stringify({
           actionType,
           gateId: params.gateId,
-          incidentId: params.incidentId
+          incidentId: params.incidentId,
+          operator: user?.displayName || user?.email || "Command Center Operator"
         })
       });
 
@@ -298,12 +320,13 @@ export default function App() {
           setSelectedIncident(null);
         }
       }
-    } catch (err: any) {
-      addLog(`Failed executing response: ${err.message}`);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      addLog(`Failed executing response: ${errMsg}`);
     }
-  };
+  }, [user, addLog]);
 
-  const handleApplyRecommendation = (recId: string) => {
+  const handleApplyRecommendation = useCallback((recId: string) => {
     const rec = recommendations.find(r => r.id === recId);
     if (!rec || rec.applied) return;
 
@@ -318,7 +341,7 @@ export default function App() {
     } else if (rec.id === "rec-3") {
       handleApplyAction("optimize_sustainability", {});
     }
-  };
+  }, [recommendations, addLog, handleApplyAction]);
 
   if (authLoading) {
     return (
@@ -361,6 +384,79 @@ export default function App() {
       return user.email.substring(0, 2).toUpperCase();
     }
     return 'G'; // Guest
+  };
+
+  const startSpeechRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSimulatedSpeech("⚠️ Speech Recognition is not supported in this browser. Please use Chrome, Edge or Safari with enabled speech permissions.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = currentLanguage === 'es' ? 'es-ES' : 'en-US';
+
+    setIsListening(true);
+    setSimulatedSpeech("🎤 Listening... Speak into your microphone now.");
+
+    recognition.onstart = () => {
+      console.log("Speech recognition started");
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event);
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        setSimulatedSpeech("❌ Microphone Permission Denied. Please enable microphone access in your browser settings to use real voice assistant.");
+      } else if (event.error === 'no-speech') {
+        setSimulatedSpeech("❌ No speech was detected. Please try speaking again closer to your microphone.");
+      } else {
+        setSimulatedSpeech(`❌ Speech Recognition Error: ${event.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.onresult = async (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      if (!transcript || transcript.trim() === "") {
+        setSimulatedSpeech("❌ Speech was empty or unintelligible. Please try again.");
+        return;
+      }
+
+      setSimulatedSpeech(`🎤 Transcribing: "${transcript}"\n\n🔄 Querying Aegis AI...`);
+
+      try {
+        const token = (window as any).aegisCsrfToken || '';
+        const res = await fetch('/api/voice-assistant', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Aegis-CSRF-Token': token
+          },
+          body: JSON.stringify({ text: transcript })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setSimulatedSpeech(
+            `🎤 Input (${data.inputLanguage || 'English'}):\n"${data.transcribedText}"\n\n🔄 Translated:\n"${data.translatedText}"\n\n🤖 Aegis Assist:\n"${data.response}"\n\n🇪🇸 Spanish Assist:\n"${data.translatedResponse}"`
+          );
+        } else if (data.response) {
+          setSimulatedSpeech(data.response);
+        } else {
+          setSimulatedSpeech(`❌ Server Error: ${data.error || 'Failed to process voice query'}`);
+        }
+      } catch (err: any) {
+        console.error(err);
+        setSimulatedSpeech("❌ Failed to reach Aegis AI backend. Please check network connection.");
+      }
+    };
+
+    recognition.start();
   };
 
   // Calculate percentage of stadium occupancy
@@ -560,163 +656,17 @@ export default function App() {
       <main className="flex-1 px-6 py-8 max-w-7xl w-full mx-auto space-y-8">
         
         {/* Dynamic State Banner Info */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" aria-live="polite">
-          {/* Card 1: Stadium Influx */}
-          <button 
-            onClick={() => {
-              setActiveRole('command');
-              setActiveMapLayer('gates');
-              setTimeout(() => {
-                document.getElementById('digital-twin-canvas')?.scrollIntoView({ behavior: 'smooth' });
-              }, 100);
-            }}
-            className="p-5 rounded-2xl border border-slate-900 bg-slate-950/40 backdrop-blur-md flex flex-col justify-between text-left hover:bg-slate-900/60 transition-all duration-300 hover:border-slate-800 hover:scale-[1.02] cursor-pointer group shadow-[0_0_15px_rgba(0,0,0,0.1)] hover:shadow-[0_0_20px_rgba(99,102,241,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-            aria-label={`Stadium Influx: ${stadiumState.attendanceCount.toLocaleString()} fans, ${attendancePercentage}% capacity. Click to view gates on map.`}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider group-hover:text-slate-400 transition-colors">{t.stadiumInflux}</span>
-              <span className="text-[9px] font-mono text-indigo-400 bg-indigo-950/20 border border-indigo-900/20 px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse"></span>
-                LIVE MODEL
-              </span>
-            </div>
-            
-            <div className="my-3 space-y-1">
-              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider block">AI Prediction</span>
-              <p className="text-xs font-semibold text-indigo-400 leading-tight">
-                Capacity limit projected in 12 mins. Confidence: 98%.
-              </p>
-            </div>
-
-            <div className="border-t border-slate-900/60 pt-2.5 w-full flex items-center justify-between text-[11px]">
-              <span className="text-slate-400 font-mono font-medium">
-                {stadiumState.attendanceCount.toLocaleString()} fans
-              </span>
-              <span className="text-slate-500 font-mono">
-                {attendancePercentage}% capacity limit
-              </span>
-            </div>
-          </button>
-
-          {/* Card 2: Crowd Flow Density */}
-          <button 
-            onClick={() => {
-              setActiveRole('command');
-              setActiveMapLayer('heat');
-              setTimeout(() => {
-                document.getElementById('digital-twin-canvas')?.scrollIntoView({ behavior: 'smooth' });
-              }, 100);
-            }}
-            className="p-5 rounded-2xl border border-slate-900 bg-slate-950/40 backdrop-blur-md flex flex-col justify-between text-left hover:bg-slate-900/60 transition-all duration-300 hover:border-slate-800 hover:scale-[1.02] cursor-pointer group shadow-[0_0_15px_rgba(0,0,0,0.1)] hover:shadow-[0_0_20px_rgba(245,158,11,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-            aria-label={`Crowd Flow Density: ${stadiumState.crowdDensity}%. Click to view heat map.`}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider group-hover:text-slate-400 transition-colors">{t.crowdFlow}</span>
-              <span className="text-[9px] font-mono text-amber-400 bg-amber-950/20 border border-amber-900/20 px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse"></span>
-                ACTIVE FLOW
-              </span>
-            </div>
-            
-            <div className="my-3 space-y-1">
-              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider block">AI Insight</span>
-              <p className={`text-xs font-semibold leading-tight ${stadiumState.crowdDensity > 80 ? 'text-rose-400' : 'text-amber-400'}`}>
-                {stadiumState.gateStatuses.find(g => g.id === "B")?.status === 'congested'
-                  ? "Gate B bottleneck active. Predicted delay reduction: 21%."
-                  : "Gate B optimized. Rerouting bypass functioning nominally."}
-              </p>
-            </div>
-
-            <div className="border-t border-slate-900/60 pt-2.5 w-full flex items-center justify-between text-[11px]">
-              <span className="text-slate-400 font-mono font-medium">
-                {stadiumState.crowdDensity}% flow index
-              </span>
-              <span className="text-slate-500 font-mono">
-                {stadiumState.crowdDensity > 80 ? 'Heavy density' : 'Flow rates nominal'}
-              </span>
-            </div>
-          </button>
-
-          {/* Card 3: Stadium Safety Score */}
-          <button 
-            onClick={() => {
-              setActiveRole('command');
-              setActiveMapLayer('security');
-              const firstActive = stadiumState?.activeIncidents.find(i => i.status !== 'resolved');
-              if (firstActive) {
-                setSelectedIncident(firstActive);
-              }
-              setTimeout(() => {
-                document.getElementById('active-incidents-panel')?.scrollIntoView({ behavior: 'smooth' });
-              }, 100);
-            }}
-            className="p-5 rounded-2xl border border-slate-900 bg-slate-950/40 backdrop-blur-md flex flex-col justify-between text-left hover:bg-slate-900/60 transition-all duration-300 hover:border-slate-800 hover:scale-[1.02] cursor-pointer group shadow-[0_0_15px_rgba(0,0,0,0.1)] hover:shadow-[0_0_20px_rgba(244,63,94,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-            aria-label={`Stadium Safety Score: ${stadiumState.safetyIndex}%. Click to view active incidents.`}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider group-hover:text-slate-400 transition-colors">{t.safetyScore}</span>
-              <span className="text-[9px] font-mono text-rose-400 bg-rose-950/20 border border-rose-900/20 px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                <span className="w-1 h-1 rounded-full bg-rose-400 animate-pulse"></span>
-                SOP RISK MODEL
-              </span>
-            </div>
-            
-            <div className="my-3 space-y-1">
-              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider block">AI Prediction</span>
-              <p className={`text-xs font-semibold leading-tight ${activeAlertCount > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                {activeAlertCount > 0 
-                  ? `Scanner failure & heat stress active. Responder en route.` 
-                  : "All parameters secure. Threat likelihood: low (1.2%)."}
-              </p>
-            </div>
-
-            <div className="border-t border-slate-900/60 pt-2.5 w-full flex items-center justify-between text-[11px]">
-              <span className="text-slate-400 font-mono font-medium">
-                {stadiumState.safetyIndex}% safe
-              </span>
-              <span className="text-slate-500 font-mono">
-                {activeAlertCount > 0 ? `${activeAlertCount} active incidents` : 'System secure'}
-              </span>
-            </div>
-          </button>
-
-          {/* Card 4: Sustainability Score */}
-          <button 
-            onClick={() => {
-              setActiveRole('command');
-              setActiveMapLayer('facilities');
-              setTimeout(() => {
-                document.getElementById('digital-twin-canvas')?.scrollIntoView({ behavior: 'smooth' });
-              }, 100);
-            }}
-            className="p-5 rounded-2xl border border-slate-900 bg-slate-950/40 backdrop-blur-md flex flex-col justify-between text-left hover:bg-slate-900/60 transition-all duration-300 hover:border-slate-800 hover:scale-[1.02] cursor-pointer group shadow-[0_0_15px_rgba(0,0,0,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-            aria-label={`Sustainability Index: ${stadiumState.sustainabilityScore}%. Click to view resources.`}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider group-hover:text-slate-400 transition-colors">{t.sustainabilityIndex}</span>
-              <span className="text-[9px] font-mono text-emerald-400 bg-emerald-950/20 border border-emerald-900/20 px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse"></span>
-                GRID CONTEXT
-              </span>
-            </div>
-            
-            <div className="my-3 space-y-1">
-              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider block">AI Insight</span>
-              <p className="text-xs font-semibold text-emerald-400 leading-tight">
-                Peak-shaving active. Saving 50 kW on East concourse lighting.
-              </p>
-            </div>
-
-            <div className="border-t border-slate-900/60 pt-2.5 w-full flex items-center justify-between text-[11px]">
-              <span className="text-slate-400 font-mono font-medium">
-                {stadiumState.sustainabilityScore}% index
-              </span>
-              <span className="text-slate-500 font-mono">
-                Conserving {stadiumState.resourceUsage.electricitySavingPct}% energy
-              </span>
-            </div>
-          </button>
-        </section>
+        <ErrorBoundary fallbackTitle="KPI Card Grid Failure">
+          <KPICardGrid
+            stadiumState={stadiumState}
+            attendancePercentage={attendancePercentage}
+            activeAlertCount={activeAlertCount}
+            t={t}
+            setActiveRole={setActiveRole}
+            setActiveMapLayer={setActiveMapLayer}
+            setSelectedIncident={setSelectedIncident}
+          />
+        </ErrorBoundary>
 
         {/* Dynamic Routing based on selected Role view */}
 
@@ -725,377 +675,78 @@ export default function App() {
           <div className="space-y-8 animate-in fade-in duration-300">
             
             {/* 🤖 HERO ACTIVE AI DECISION DIRECTIVE BANNER */}
-            <div className="rounded-3xl border border-slate-900 bg-gradient-to-r from-slate-950 via-slate-950 to-indigo-950/20 p-6 shadow-2xl relative overflow-hidden flex flex-col md:flex-row gap-6 items-start justify-between">
-              
-              {/* Abstract decorative graphic elements matching FIFA OS vibes */}
-              <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-[radial-gradient(ellipse_at_top_right,rgba(99,102,241,0.08),transparent_70%)] pointer-events-none"></div>
-              <div className="absolute left-0 bottom-0 top-0 w-24 bg-[radial-gradient(circle_at_bottom_left,rgba(244,63,94,0.02),transparent_70%)] pointer-events-none"></div>
-
-              {/* Card Body */}
-              <div className="flex-1 space-y-4">
-                
-                {/* Header line with badge indicator */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[10px] uppercase font-bold tracking-widest text-indigo-400 bg-indigo-950/40 border border-indigo-900/40 px-2 py-0.5 rounded-full flex items-center gap-1.5 animate-pulse">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                    ACTIVE OPERATIONAL INTERVENTION ALERT
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-mono">ID: AEGIS-OS-DIRECTIVE-1</span>
-                </div>
-
-                {/* Main Heading depending on State */}
-                {!recommendations.find(r => r.id === "rec-1")?.applied && !isRec1Rejected ? (
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-extrabold tracking-tight text-slate-100 flex items-center gap-2">
-                      <span className="text-rose-500 animate-pulse">⚠️</span>
-                      Predictive Bottleneck: Gate B Turnstiles Overloading
-                    </h2>
-                    <p className="text-slate-300 text-sm leading-relaxed max-w-3xl">
-                      <strong>AI Forecast:</strong> Spectator queue at <span className="text-amber-400 font-semibold font-mono">Gate B (East Plaza Entry)</span> is forecasted to exceed safe density limits in <span className="text-rose-400 font-bold font-mono">9 minutes</span>. Dynamic ingress sensors record flow rates at <span className="text-rose-400 font-semibold">38m wait times</span>. 
-                    </p>
-                    <div className="bg-slate-900/60 rounded-2xl p-4 border border-slate-800/60 max-w-3xl space-y-3">
-                      <p className="text-xs text-slate-300 flex items-start gap-1.5 leading-relaxed">
-                        <span className="text-indigo-400">🤖</span>
-                        <span><strong>Recommended SOP Directive:</strong> Redirect <span className="text-indigo-300 font-bold">15% of approaching East-lot ticket arrivals</span> to the de-congested <span className="text-emerald-400 font-semibold">Gate C (West Plaza Plaza)</span>. Launch multilingual volunteer announcements.</span>
-                      </p>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono border-t border-slate-800/40 pt-2 text-slate-400">
-                        <span className="text-indigo-400">Confidence Score: 97%</span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-emerald-400">↓ Gate B Wait: -22 mins</span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-emerald-400">↑ Safety Coherence: +4%</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : !recommendations.find(r => r.id === "rec-2")?.applied && !isRec2Rejected ? (
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-extrabold tracking-tight text-slate-100 flex items-center gap-2">
-                      <span className="text-amber-500">🔥</span>
-                      Thermal Distress Alarm: Sector B14 Solar Exposure Heat
-                    </h2>
-                    <p className="text-slate-300 text-sm leading-relaxed max-w-3xl">
-                      <strong>AI Forecast:</strong> Thermal telemetry near sun-exposed seats in <span className="text-amber-400 font-semibold font-mono">Sector B14</span> has hit <span className="text-rose-400 font-bold font-mono">39°C (102°F)</span>. Ground sensors estimate high dehydration fatigue risk for 14 active spectators.
-                    </p>
-                    <div className="bg-slate-900/60 rounded-2xl p-4 border border-slate-800/60 max-w-3xl space-y-3">
-                      <p className="text-xs text-slate-300 flex items-start gap-1.5 leading-relaxed">
-                        <span className="text-indigo-400">🤖</span>
-                        <span><strong>Recommended SOP Directive:</strong> Dispatch <span className="text-amber-300 font-bold">Volunteer Hydration Squad #4</span> with insulated ice packs and electrolyte replenishment tubes directly to Sector B14.</span>
-                      </p>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono border-t border-slate-800/40 pt-2 text-slate-400">
-                        <span className="text-indigo-400">Confidence Score: 95%</span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-emerald-400">↓ Dehydration Rate: -78%</span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-emerald-400">↑ Volunteer Efficacy: +35%</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-extrabold tracking-tight text-emerald-400 flex items-center gap-2">
-                      <span className="text-emerald-500 animate-pulse">🛡️</span>
-                      Closed-Loop Cognitive Shield Fully Operational
-                    </h2>
-                    <p className="text-slate-300 text-sm leading-relaxed max-w-3xl">
-                      AegisAI OS has neutralized all pending turnstile congestion bottlenecks, HVAC cooling strains, and medical telemetry anomalies. Operating environment is fully stabilized.
-                    </p>
-                    <div className="bg-slate-900/30 rounded-2xl p-4 border border-emerald-950/20 max-w-3xl text-xs text-slate-400 leading-relaxed font-mono flex items-center gap-2">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                      </span>
-                      <span>Continuous reinforcement models monitoring 12 concurrent stadium sensor streams at 4 Hz. System Health: 100%.</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Action Buttons Panel */}
-              <div className="flex flex-col gap-2.5 w-full md:w-auto shrink-0 self-end md:self-center">
-                {!recommendations.find(r => r.id === "rec-1")?.applied && !isRec1Rejected ? (
-                  <>
-                    <button 
-                      onClick={() => {
-                        handleApplyRecommendation("rec-1");
-                        addLog("Bypassed pedestrian overload at Gate B. Rerouted 15% traffic to Gate C.");
-                      }}
-                      className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/10 hover:shadow-indigo-500/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44 border border-indigo-500/30"
-                    >
-                      <span>⚡ Approve Reroute</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setIsRec1Rejected(true);
-                        addLog("[AI WARNING] Supervisor rejected Gate B pedestrian rerouting directive.");
-                      }}
-                      className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-850 text-slate-300 font-semibold text-xs border border-slate-800 hover:border-slate-750 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44"
-                    >
-                      <span>Dismiss Directive</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setActiveAgentId('crowd');
-                        addLog("Supervisor requested trace reasoning for Gate B.");
-                        setTimeout(() => {
-                          document.getElementById('agent-chat-section')?.scrollIntoView({ behavior: 'smooth' });
-                        }, 100);
-                      }}
-                      className="px-5 py-2.5 rounded-xl bg-slate-900/40 hover:bg-slate-900 text-indigo-400 font-semibold text-xs border border-indigo-950 hover:border-indigo-900 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44"
-                    >
-                      <span>🔍 Explain Reasoning</span>
-                    </button>
-                  </>
-                ) : !recommendations.find(r => r.id === "rec-2")?.applied && !isRec2Rejected ? (
-                  <>
-                    <button 
-                      onClick={() => {
-                        handleApplyRecommendation("rec-2");
-                        addLog("Dispatched Hydration Squad #4 with dry-ice water packs to Sector B14.");
-                      }}
-                      className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/10 hover:shadow-indigo-500/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44 border border-indigo-500/30"
-                    >
-                      <span>⚡ Dispatch Squad</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setIsRec2Rejected(true);
-                        addLog("[AI WARNING] Supervisor dismissed Sector B14 thermal mitigation directive.");
-                      }}
-                      className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-850 text-slate-300 font-semibold text-xs border border-slate-800 hover:border-slate-750 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44"
-                    >
-                      <span>Dismiss Directive</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setActiveAgentId('emergency');
-                        addLog("Supervisor requested trace reasoning for Sector B14.");
-                        setTimeout(() => {
-                          document.getElementById('agent-chat-section')?.scrollIntoView({ behavior: 'smooth' });
-                        }, 100);
-                      }}
-                      className="px-5 py-2.5 rounded-xl bg-slate-900/40 hover:bg-slate-900 text-indigo-400 font-semibold text-xs border border-indigo-950 hover:border-indigo-900 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44"
-                    >
-                      <span>🔍 Explain Reasoning</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button 
-                      onClick={() => {
-                        addLog("[AegisAI OS Diagnostic] Executing full-stadium HVAC, gate turnstile, and regional light-rail telemetry diagnostic...");
-                        setTimeout(() => {
-                          addLog("[AegisAI OS Diagnostic SUCCESS] Completed all check loops. No operational drifts or structural anomalies detected.");
-                        }, 1200);
-                      }}
-                      className="px-5 py-3 rounded-xl bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400 font-bold text-xs border border-emerald-900/40 active:scale-95 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44 shadow-lg shadow-emerald-950/20"
-                    >
-                      <span>⚙️ Run Diagnostics</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setActiveAgentId('command');
-                        addLog("Supervisor initiated chat session with Command Center Orchestrator.");
-                        setTimeout(() => {
-                          document.getElementById('agent-chat-section')?.scrollIntoView({ behavior: 'smooth' });
-                        }, 100);
-                      }}
-                      className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-850 text-slate-300 font-semibold text-xs border border-slate-800 hover:border-slate-750 transition cursor-pointer flex items-center justify-center gap-2 w-full md:w-44"
-                    >
-                      <span>Consult Command AI</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
+            <ErrorBoundary fallbackTitle="AI Decision Banner Failure">
+              <AIDecisionBanner
+                recommendations={recommendations}
+                isRec1Rejected={isRec1Rejected}
+                isRec2Rejected={isRec2Rejected}
+                setIsRec1Rejected={setIsRec1Rejected}
+                setIsRec2Rejected={setIsRec2Rejected}
+                handleApplyRecommendation={handleApplyRecommendation}
+                setActiveAgentId={setActiveAgentId}
+                addLog={addLog}
+              />
+            </ErrorBoundary>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               
               {/* Left Column: Alerts list & KPIs (3 cols) */}
               <div className="lg:col-span-3 space-y-6">
                 
-                <div id="active-incidents-panel" className="rounded-3xl border border-slate-900 bg-slate-950/50 p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">{t.tacticalLogs}</h3>
-                    <span className="text-[10px] bg-rose-950/30 text-rose-400 border border-rose-900/30 px-1.5 py-0.5 rounded font-mono">
-                      {stadiumState.activeIncidents.filter(i => i.status !== 'resolved').length} Active
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {stadiumState.activeIncidents.map((inc) => (
-                      <button
-                        key={inc.id}
-                        onClick={() => setSelectedIncident(inc)}
-                        className={`w-full text-left p-3.5 rounded-xl border transition-all duration-200 relative overflow-hidden flex flex-col gap-2 ${selectedIncident?.id === inc.id ? 'border-indigo-500/50 bg-indigo-950/10' : 'border-slate-800/60 bg-slate-900/30 hover:border-slate-700/60'}`}
-                      >
-                        <div className="absolute top-0 left-0 h-full w-1 bg-current" style={{ color: inc.severity === 'high' || inc.severity === 'critical' ? '#ef4444' : '#f59e0b' }} />
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-100">{inc.title}</span>
-                          <span className="text-[9px] text-slate-500 font-mono">{inc.timestamp}</span>
-                        </div>
-                        <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">{inc.description}</p>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-slate-500 font-mono">Sector: {inc.location}</span>
-                          <span className={`capitalize font-semibold ${inc.status === 'resolved' ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`}>{inc.status}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-
-                  {selectedIncident && (
-                    <div className="mt-4 p-4 rounded-2xl border border-indigo-500/30 bg-indigo-950/20 space-y-3.5 animate-in fade-in duration-200">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Incident Diagnostic & Fix</span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono uppercase font-bold ${selectedIncident.severity === 'high' || selectedIncident.severity === 'critical' ? 'bg-rose-950/50 text-rose-400 border border-rose-900/30' : 'bg-amber-950/50 text-amber-400 border border-amber-900/30'}`}>
-                          {selectedIncident.severity}
-                        </span>
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-bold text-slate-200">{selectedIncident.title}</h4>
-                        <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">{selectedIncident.description}</p>
-                      </div>
-                      {selectedIncident.status !== 'resolved' ? (
-                        <div className="space-y-3 pt-1">
-                          <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-900 text-[10px] text-slate-400 space-y-1">
-                            <strong className="text-indigo-300 block">SOP Response Guideline:</strong>
-                            <p>{selectedIncident.recommendedAction}</p>
-                          </div>
-                          <div className="flex gap-2">
-                            {selectedIncident.status === 'active' && (
-                              <button
-                                onClick={() => handleApplyAction("dispatch_medical", { incidentId: selectedIncident.id })}
-                                className="flex-1 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-slate-100 font-semibold text-[10px] tracking-wider transition-all cursor-pointer"
-                              >
-                                Deploy Response
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleApplyAction("resolve_incident", { incidentId: selectedIncident.id })}
-                              className="flex-1 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-100 font-semibold text-[10px] tracking-wider transition-all cursor-pointer"
-                            >
-                              Resolve Incident
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1.5 justify-center py-2 bg-slate-900/40 rounded-xl border border-emerald-900/20">
-                          <CheckCircle className="w-3.5 h-3.5" />
-                          Threat Neutralized / Resolved
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <ErrorBoundary fallbackTitle="Tactical Incident Log Panel Failure">
+                  <IncidentLogPanel
+                    stadiumState={stadiumState}
+                    selectedIncident={selectedIncident}
+                    setSelectedIncident={setSelectedIncident}
+                    handleApplyAction={handleApplyAction}
+                    t={t}
+                  />
+                </ErrorBoundary>
 
                 {/* Scenario Simulator Sandbox */}
-                <ScenarioSimulator 
-                  stadiumState={stadiumState} 
-                  onStateUpdate={setStadiumState}
-                  onTriggerLog={addLog}
-                />
+                <ErrorBoundary fallbackTitle="Scenario Simulator Fault">
+                  <ScenarioSimulator 
+                    stadiumState={stadiumState} 
+                    onStateUpdate={setStadiumState}
+                    onTriggerLog={addLog}
+                    user={user}
+                  />
+                </ErrorBoundary>
 
               </div>
 
               {/* Center Column: Interactive Digital Twin Map (6 cols) */}
               <div className="lg:col-span-6">
-                <DigitalTwin 
-                  state={stadiumState} 
-                  onApplyAction={handleApplyAction}
-                  selectedIncident={selectedIncident}
-                  onSelectIncident={setSelectedIncident}
-                  activeLayer={activeMapLayer}
-                  onActiveLayerChange={setActiveMapLayer}
-                />
+                <ErrorBoundary fallbackTitle="Digital Twin Visualizer Failure">
+                  <DigitalTwin 
+                    state={stadiumState} 
+                    onApplyAction={handleApplyAction}
+                    selectedIncident={selectedIncident}
+                    onSelectIncident={setSelectedIncident}
+                    activeLayer={activeMapLayer}
+                    onActiveLayerChange={setActiveMapLayer}
+                  />
+                </ErrorBoundary>
               </div>
 
               {/* Right Column: AI Live Suggestions & Sandbox Trigger (3 cols) */}
               <div className="lg:col-span-3 space-y-6">
                 
-                <div className="rounded-3xl border border-slate-900 bg-slate-950/50 p-5 space-y-4">
-                  <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-indigo-400" />
-                    {t.autoInterventions}
-                  </h3>
-                  <div className="space-y-3">
-                    {recommendations.map((rec) => (
-                      <div 
-                        key={rec.id}
-                        className={`p-3.5 rounded-2xl border ${rec.applied ? 'border-slate-900 bg-slate-900/10 opacity-60' : 'border-indigo-500/20 bg-indigo-950/10'} space-y-2.5`}
-                      >
-                        <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400">
-                          <span className="capitalize text-indigo-300">Agent: {rec.sourceAgent}</span>
-                          <span className="font-mono">{rec.timestamp}</span>
-                        </div>
-                        <h4 className="text-xs font-semibold text-slate-200">{rec.title}</h4>
-                        <p className="text-[10px] text-slate-400 leading-relaxed">{rec.description}</p>
-                        
-                        {!rec.applied ? (
-                          <button
-                            onClick={() => handleApplyRecommendation(rec.id)}
-                            className="w-full py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-slate-100 font-semibold text-[10px] tracking-wider transition-all"
-                          >
-                            {t.authorize}
-                          </button>
-                        ) : (
-                          <div className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 justify-center py-1 bg-slate-900/60 rounded-xl border border-slate-800">
-                            <CheckCircle className="w-3.5 h-3.5" />
-                            {t.activeProtocol}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <ErrorBoundary fallbackTitle="Recommendations Panel Failure">
+                  <RecommendationsPanel
+                    recommendations={recommendations}
+                    handleApplyRecommendation={handleApplyRecommendation}
+                    t={t}
+                  />
+                </ErrorBoundary>
 
                 {/* 🤖 COLOR-CODED AI REASONING TIMELINE */}
-                <div className="rounded-3xl border border-slate-900 bg-slate-950/40 p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold uppercase text-slate-500 tracking-wider">🤖 {t.liveTelemetry}</h3>
-                    <span className="text-[9px] font-mono text-slate-500 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">1 SOURCE OF TRUTH</span>
-                  </div>
-                  
-                  <div className="relative pl-4 border-l border-slate-900 space-y-4 h-[160px] overflow-y-auto scrollbar-thin pr-1" aria-live="polite">
-                    {systemLogs.map((log, i) => {
-                      // Parse timestamp [HH:MM:SS]
-                      const match = log.match(/^\[([^\]]+)\]\s*(.*)$/);
-                      const time = match ? match[1] : '';
-                      const msg = match ? match[2] : log;
-
-                      // Decide color coding and icons depending on keywords
-                      let colorClass = "bg-slate-700 text-slate-400 border-slate-800";
-                      let indicatorDot = "bg-slate-500";
-                      
-                      const lowerMsg = msg.toLowerCase();
-                      if (lowerMsg.includes("warning") || lowerMsg.includes("rejected") || lowerMsg.includes("dismissed")) {
-                        colorClass = "text-rose-400";
-                        indicatorDot = "bg-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.5)] animate-pulse";
-                      } else if (lowerMsg.includes("applied") || lowerMsg.includes("resolved") || lowerMsg.includes("optimized") || lowerMsg.includes("success") || lowerMsg.includes("calibrated")) {
-                        colorClass = "text-emerald-400";
-                        indicatorDot = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]";
-                      } else if (lowerMsg.includes("executing") || lowerMsg.includes("applying") || lowerMsg.includes("dispatching") || lowerMsg.includes("triggering")) {
-                        colorClass = "text-indigo-400 font-semibold";
-                        indicatorDot = "bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)] animate-bounce";
-                      } else if (lowerMsg.includes("predictive") || lowerMsg.includes("forecast") || lowerMsg.includes("model") || lowerMsg.includes("loaded")) {
-                        colorClass = "text-amber-400";
-                        indicatorDot = "bg-amber-500";
-                      }
-
-                      return (
-                        <div key={i} className="relative text-[10px] space-y-1 group leading-relaxed">
-                          {/* Left node anchor marker */}
-                          <div className={`absolute -left-[20.5px] top-1 w-2.5 h-2.5 rounded-full border-2 border-slate-950 ${indicatorDot}`} />
-                          
-                          <div className="flex items-center justify-between font-mono text-[9px] text-slate-500 group-hover:text-slate-400 transition-colors">
-                            <span>TRACE EVENT</span>
-                            <span>{time}</span>
-                          </div>
-                          
-                          <p className={`font-mono leading-relaxed ${colorClass}`}>{msg}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <ErrorBoundary fallbackTitle="Telemetry Feed Failure">
+                  <TelemetryFeed
+                    systemLogs={systemLogs}
+                    t={t}
+                  />
+                </ErrorBoundary>
 
               </div>
 
@@ -1103,12 +754,16 @@ export default function App() {
 
             {/* Dynamic collaborative chat interface shown underneath */}
             <div id="agent-chat-section" className="scroll-mt-24 w-full">
-              <AgentControlCenter 
-                stadiumState={stadiumState}
-                onStateUpdate={setStadiumState}
-                selectedAgent={activeAgentId}
-                onSelectAgent={setActiveAgentId}
-              />
+              <ErrorBoundary fallbackTitle="AI Agent Command Orchestrator Error">
+                <AgentControlCenter 
+                  stadiumState={stadiumState}
+                  onStateUpdate={setStadiumState}
+                  selectedAgent={activeAgentId}
+                  onSelectAgent={setActiveAgentId}
+                  activeRole={activeRole}
+                  user={user}
+                />
+              </ErrorBoundary>
             </div>
 
           </div>
@@ -1220,15 +875,7 @@ export default function App() {
                       <button 
                         onClick={() => {
                           if (isListening) return;
-                          setIsListening(true);
-                          setSimulatedSpeech("Listening...");
-                          setTimeout(() => {
-                            setSimulatedSpeech("🎤 Input (English):\n\"Where is the wheelchair elevator?\"");
-                            setTimeout(() => {
-                              setSimulatedSpeech("🎤 Input (English):\n\"Where is the wheelchair elevator?\"\n\n🔄 Translated (Spanish):\n\"¿Dónde está el ascensor de accesibilidad?\"\n\n🤖 Aegis Assist:\n\"Elevator Orange (Sector B, near Section B14) is transitioned to priority-access. Ramps are 20m straight ahead.\"");
-                              setIsListening(false);
-                            }, 1500);
-                          }, 1000);
+                          startSpeechRecognition();
                         }}
                         className={`py-2 rounded-xl text-slate-100 text-xs font-semibold flex items-center justify-center gap-1.5 shadow transition-all duration-200 ${isListening ? 'bg-indigo-900 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-500'}`}
                       >
@@ -1262,7 +909,9 @@ export default function App() {
               </div>
 
               {/* Directly integrate Fan agent chat portal */}
-              <AgentControlCenter stadiumState={stadiumState} onStateUpdate={setStadiumState} />
+              <ErrorBoundary fallbackTitle="Fan Assistance AI Thread Halted">
+                <AgentControlCenter stadiumState={stadiumState} onStateUpdate={setStadiumState} />
+              </ErrorBoundary>
             </div>
 
           </div>
@@ -1271,7 +920,16 @@ export default function App() {
         {/* 3. TECHNICAL DOCUMENTATION & PITCH DECK */}
         {activeRole === 'docs' && (
           <div className="animate-in fade-in duration-300">
-            <AegisDocSheet />
+            <Suspense fallback={
+              <div className="p-12 rounded-3xl border border-slate-900 bg-slate-950/40 backdrop-blur-md flex flex-col items-center justify-center text-center space-y-4">
+                <div className="w-10 h-10 rounded-full border border-slate-800 flex items-center justify-center animate-spin">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
+                </div>
+                <span className="text-xs font-mono text-slate-500 animate-pulse">DEPLOYING SECURITY & TRACE MANIFESTS...</span>
+              </div>
+            }>
+              <AegisDocSheet />
+            </Suspense>
           </div>
         )}
 

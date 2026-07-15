@@ -13,11 +13,66 @@ import { SYSTEM_PROMPTS } from "./src/lib/ai/prompts";
 import { TOOLS_SCHEMA } from "./src/lib/ai/tools";
 import { runInputGuardrails } from "./src/lib/ai/guardrails";
 import { retrievePlaybookArticles, generateContextBlock } from "./src/lib/ai/rag";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 
 dotenv.config();
 
 const app = express();
+
+// Secure server with Helmet headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable CSP to prevent blocking local dev/iframe assets
+  crossOriginEmbedderPolicy: false,
+}));
+
 app.use(express.json());
+
+// Server-wide rate limit configuration
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // Limit each IP to 60 requests per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Too many operational requests from this station. AegisAI rate-limiting active.",
+    success: false
+  }
+});
+
+// Centralized CSRF Protection
+const csrfToken = Math.random().toString(36).substring(2) + Date.now().toString(36);
+
+const csrfGuard = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const incomingToken = req.headers['x-aegis-csrf-token'];
+  if (!incomingToken || incomingToken !== csrfToken) {
+    return res.status(403).json({ error: "CSRF token mismatch. Action blocked for security." });
+  }
+  next();
+};
+
+// Enterprise-grade Server-side Audit Logging
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  operator: string;
+  action: string;
+  details: string;
+}
+
+const auditLogs: AuditLogEntry[] = [];
+
+export function logAuditAction(operator: string, action: string, details: string) {
+  const entry: AuditLogEntry = {
+    id: `audit-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+    timestamp: new Date().toISOString(),
+    operator,
+    action,
+    details
+  };
+  auditLogs.unshift(entry);
+  console.log(`[AUDIT LOG] [${entry.timestamp}] Operator: ${operator} | Action: ${action} | Details: ${details}`);
+}
 
 const PORT = 3000;
 
@@ -254,13 +309,43 @@ app.get("/api/stadium-state", (req, res) => {
   res.json(stadiumState);
 });
 
+// CSRF exchange token endpoint
+app.get("/api/csrf-token", (req, res) => {
+  res.json({ token: csrfToken });
+});
+
+// Secure API endpoint to fetch server-side operator audits
+app.get("/api/audit-logs", (req, res) => {
+  res.json(auditLogs);
+});
+
 // API Endpoint to manually trigger actions or resolve alerts
-app.post("/api/apply-recommendation", (req, res) => {
-  const { actionType, gateId, incidentId } = req.body;
+app.post("/api/apply-recommendation", csrfGuard, apiLimiter, (req, res) => {
+  const { actionType, gateId, incidentId, operator } = req.body;
+  
+  // Validate request parameters shape and boundaries
+  if (actionType && (typeof actionType !== "string" || actionType.length > 50)) {
+    return res.status(400).json({ error: "Invalid actionType format" });
+  }
+  if (gateId && (typeof gateId !== "string" || gateId.length > 50)) {
+    return res.status(400).json({ error: "Invalid gateId format" });
+  }
+  if (incidentId && (typeof incidentId !== "string" || incidentId.length > 50)) {
+    return res.status(400).json({ error: "Invalid incidentId format" });
+  }
+  if (operator && typeof operator === "string") {
+    const operatorGuard = runInputGuardrails(operator);
+    if (!operatorGuard.passed) {
+      return res.status(400).json({ error: "Operator validation failed: " + operatorGuard.reason });
+    }
+  }
+
+  const activeOperator = operator || "Operations Supervisor";
   
   if (actionType === "resolve_incident" && incidentId) {
     stadiumState.activeIncidents = stadiumState.activeIncidents.map(inc => {
       if (inc.id === incidentId) {
+        logAuditAction(activeOperator, "RESOLVE_INCIDENT", `Resolved active incident: '${inc.title}' at ${inc.location}`);
         return { ...inc, status: "resolved" as const };
       }
       return inc;
@@ -270,6 +355,7 @@ app.post("/api/apply-recommendation", (req, res) => {
   }
 
   if (actionType === "optimize_gate" && gateId) {
+    logAuditAction(activeOperator, "OPTIMIZE_GATE", `Initiated gate bypass optimization for Gate ${gateId}`);
     stadiumState.gateStatuses = stadiumState.gateStatuses.map(g => {
       if (g.id === gateId) {
         // Reroute some traffic: decrease wait time, balance rate
@@ -286,6 +372,7 @@ app.post("/api/apply-recommendation", (req, res) => {
   }
 
   if (actionType === "optimize_sustainability") {
+    logAuditAction(activeOperator, "OPTIMIZE_SUSTAINABILITY", `Triggered microgrid battery peak-shaving protocols`);
     stadiumState.resourceUsage.electricitySavingPct = Math.min(30, stadiumState.resourceUsage.electricitySavingPct + 5);
     stadiumState.resourceUsage.waterSavingPct = Math.min(25, stadiumState.resourceUsage.waterSavingPct + 3);
     stadiumState.sustainabilityScore = Math.min(100, stadiumState.sustainabilityScore + 4);
@@ -294,6 +381,7 @@ app.post("/api/apply-recommendation", (req, res) => {
   if (actionType === "dispatch_medical" && incidentId) {
     stadiumState.activeIncidents = stadiumState.activeIncidents.map(inc => {
       if (inc.id === incidentId) {
+        logAuditAction(activeOperator, "DISPATCH_MEDICAL", `Dispatched rapid-first-aid responder en route to: '${inc.title}' at ${inc.location}`);
         return { ...inc, status: "resolving" as const, description: inc.description + " [Medical Unit Dispatched & En Route]" };
       }
       return inc;
@@ -368,16 +456,50 @@ export function executeToolLocal(name: string, args: any, state: any) {
 const toolsList = TOOLS_SCHEMA;
 
 // Single chat and routing system utilizing the server-side Google GenAI SDK SDK
-app.post("/api/chat-agent", async (req, res) => {
-  const { agentId, message, contextState } = req.body;
+app.post("/api/chat-agent", csrfGuard, apiLimiter, async (req, res) => {
+  const { agentId, message, contextState, role, operator } = req.body;
 
   if (!agentId || !message) {
     return res.status(400).json({ error: "Missing required agentId or message" });
   }
 
+  // Validate parameter formats and boundaries
+  if (typeof agentId !== "string" || agentId.length > 50) {
+    return res.status(400).json({ error: "Invalid agentId format" });
+  }
+  if (typeof message !== "string") {
+    return res.status(400).json({ error: "Invalid message format" });
+  }
+  if (role && (typeof role !== "string" || role.length > 50)) {
+    return res.status(400).json({ error: "Invalid role format" });
+  }
+  if (operator && typeof operator === "string") {
+    const operatorGuard = runInputGuardrails(operator);
+    if (!operatorGuard.passed) {
+      return res.status(400).json({ error: "Operator validation failed: " + operatorGuard.reason });
+    }
+  }
+
+  // Server-side Role Gating:
+  // Fans can ONLY access 'fan', 'accessibility', and 'transport' agents
+  const userRole = role || 'fan';
+  const targetAgentId = agentId;
+
+  if (userRole === 'fan' && !['fan', 'accessibility', 'transport'].includes(targetAgentId)) {
+    logAuditAction("Guest Fan", "ACCESS_DENIED", `Unauthorized attempt to access operator-level Agent: '${targetAgentId}'`);
+    return res.json({
+      success: false,
+      responseText: `⚠️ **Access Denied:** Your current profile (Fan) is restricted from consulting internal operations command agents (e.g., '${targetAgentId}'). Please switch to the **Command Center** view to authorize organizer-level consults.`,
+      agentId: targetAgentId,
+      traces: [],
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    });
+  }
+
   // Run security and safety input guardrails
   const guardrail = runInputGuardrails(message);
   if (!guardrail.passed) {
+    logAuditAction(operator || "System", "GUARDRAIL_VIOLATION", `Message failed safety guardrails: "${message.substring(0, 40)}..."`);
     return res.json({
       success: false,
       responseText: `⚠️ **AegisAI Guardrails Alert:** ${guardrail.reason}`,
@@ -388,7 +510,7 @@ app.post("/api/chat-agent", async (req, res) => {
   }
   const sanitizedMessage = guardrail.sanitizedMessage;
 
-  const targetAgentId = agentId;
+  logAuditAction(operator || (userRole === 'fan' ? "Guest Fan" : "Operations Supervisor"), "CONSULT_AGENT", `Successfully consulted Agent: '${targetAgentId}'`);
 
   const agentMeta = AGENTS_METADATA[targetAgentId as AgentType];
   if (!agentMeta) {
@@ -598,17 +720,148 @@ I searched the official FIFA operations manuals for *"${result.retrievedArticle}
   }
 });
 
+// Real Bilingual Voice Assistant Endpoint
+app.post("/api/voice-assistant", csrfGuard, apiLimiter, async (req, res) => {
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: "Missing text parameter" });
+  }
+
+  // Validate parameter formats and boundaries
+  if (typeof text !== "string" || text.length > 500) {
+    return res.status(400).json({ error: "Invalid text format" });
+  }
+
+  // Sanitize input with guardrails
+  const guard = runInputGuardrails(text);
+  if (!guard.passed) {
+    return res.json({
+      success: false,
+      inputLanguage: "Unknown",
+      transcribedText: text,
+      translatedText: "Blocked by Guardrails",
+      response: `⚠️ AegisAI Guardrails Alert: ${guard.reason}`,
+      translatedResponse: `⚠️ Alerta de Seguridad AegisAI: ${guard.reason}`
+    });
+  }
+
+  const sanitizedText = guard.sanitizedMessage;
+
+  const prompt = `
+  You are the AegisAI Bilingual Speech Assistant for a stadium navigation system.
+  The spectator said (in their spoken language, which might be English, Spanish, or another language): "${sanitizedText}".
+
+  Please analyze their query and formulate a short, helpful response (under 2 sentences) about stadium operations, facilities, or navigation (e.g., elevators, concessions, bathrooms, sectors, gates, wheelchair access).
+  Use these mock/live facts if relevant:
+  - Gate B (East Entry) is currently congested (38m wait). Spectators are advised to go to Gate C (West Plaza, 4m wait).
+  - Elevator Orange (Sector B, near Section B14) is priority-access for wheelchairs. ADA Compliant Ramp B14 has a 1:12 slope.
+  - Quiet sensory room is located in Sector West mezzanine.
+  - East Concourse Bathroom has 9 min wait, West Concourse Bathroom has 1 min wait.
+  - North Concession Grill has 12 min wait.
+
+  Respond in the following structured JSON format only, with no other text, markdown blocks, or commentary:
+  {
+    "inputLanguage": "detected input language (e.g., English, Spanish, etc.)",
+    "transcribedText": "the input text",
+    "translatedText": "the translation of the input text into Spanish if the input was in English, or English if the input was in Spanish (or other language)",
+    "response": "A helpful assistant response in English",
+    "translatedResponse": "The translated assistant response in the other language (e.g., Spanish)"
+  }
+  `;
+
+  try {
+    if (ai) {
+      console.log(`Querying Gemini (gemini-3.5-flash) for Voice Assistant speech query: "${sanitizedText.substring(0, 30)}"`);
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          temperature: 0.2,
+          responseMimeType: "application/json"
+        }
+      });
+      const responseText = response.text || "{}";
+      const parsed = JSON.parse(responseText.trim());
+      return res.json({ success: true, ...parsed });
+    } else {
+      // Offline high-fidelity fallback if Gemini is not available
+      console.log(`Simulating offline voice assistant for: "${sanitizedText.substring(0, 30)}"`);
+      const lower = sanitizedText.toLowerCase();
+      let inputLanguage = "English";
+      let translatedText = "¿Dónde está el ascensor de accesibilidad?";
+      let resText = "Elevator Orange (Sector B, near Section B14) is transitioned to priority-access. Ramps are 20m straight ahead.";
+      let translatedResponse = "El ascensor naranja (Sector B, cerca de la Sección B14) ha cambiado a acceso prioritario. Las rampas están a 20 metros directo hacia adelante.";
+
+      if (lower.includes("elevator") || lower.includes("wheelchair") || lower.includes("accessibility") || lower.includes("ascensor")) {
+        inputLanguage = lower.includes("ascensor") || lower.includes("donde") ? "Spanish" : "English";
+        translatedText = inputLanguage === "Spanish" ? "Where is the elevator?" : "¿Dónde está el ascensor?";
+        resText = "Elevator Orange (Sector B, near Section B14) is transitioned to priority-access. Ramps are 20m straight ahead.";
+        translatedResponse = "El ascensor naranja (Sector B, cerca de la Sección B14) está en acceso de prioridad. Las rampas están a 20m al frente.";
+      } else if (lower.includes("bathroom") || lower.includes("toilet") || lower.includes("restroom") || lower.includes("baño")) {
+        inputLanguage = lower.includes("baño") ? "Spanish" : "English";
+        translatedText = inputLanguage === "Spanish" ? "Where are the restrooms?" : "¿Dónde están los baños?";
+        resText = "The West Concourse Bathroom has a 1-minute wait. The East Concourse Bathroom has a 9-minute wait.";
+        translatedResponse = "El baño del West Concourse tiene 1 minuto de espera. El baño del East Concourse tiene 9 minutos de espera.";
+      } else if (lower.includes("food") || lower.includes("grill") || lower.includes("eat") || lower.includes("comida")) {
+        inputLanguage = lower.includes("comida") ? "Spanish" : "English";
+        translatedText = inputLanguage === "Spanish" ? "Where is the food?" : "¿Dónde puedo comer?";
+        resText = "North Concession Grill is open but currently has a 12-minute wait time.";
+        translatedResponse = "El North Concession Grill está abierto pero tiene un tiempo de espera de 12 minutos.";
+      } else if (lower.includes("gate") || lower.includes("puerta") || lower.includes("entrada")) {
+        inputLanguage = lower.includes("puerta") || lower.includes("entrada") ? "Spanish" : "English";
+        translatedText = inputLanguage === "Spanish" ? "What's with Gate B?" : "¿Qué pasa con la Puerta B?";
+        resText = "Gate B is congested with a 38-minute wait. Please use Gate C (West Plaza) which has a 4-minute wait.";
+        translatedResponse = "La Puerta B está congestionada con 38 minutos de espera. Use la Puerta C (West Plaza) que tiene 4 minutos.";
+      } else {
+        inputLanguage = "English";
+        translatedText = `Traducción: "${sanitizedText}"`;
+        resText = `Aegis received: "${sanitizedText}". All facilities are running nominally under safety threshold.`;
+        translatedResponse = `Aegis recibió: "${sanitizedText}". Todas las instalaciones funcionan nominalmente bajo el umbral de seguridad.`;
+      }
+
+      return res.json({
+        success: true,
+        inputLanguage,
+        transcribedText: sanitizedText,
+        translatedText,
+        response: resText,
+        translatedResponse
+      });
+    }
+  } catch (error) {
+    console.error("Voice assistant backend error:", error);
+    return res.status(500).json({ error: "Failed to process voice assistant query" });
+  }
+});
+
 // Advanced Collaborative Multi-Agent Scenario Predictor (Planning -> Execution -> Critic)
-app.post("/api/predict-scenario", async (req, res) => {
-  const { scenarioName, scenarioDescription } = req.body;
+app.post("/api/predict-scenario", csrfGuard, apiLimiter, async (req, res) => {
+  const { scenarioName, scenarioDescription, operator } = req.body;
 
   if (!scenarioName) {
     return res.status(400).json({ error: "Missing scenarioName parameter" });
   }
 
+  // Validate parameter shapes and lengths
+  if (typeof scenarioName !== "string" || scenarioName.length > 100) {
+    return res.status(400).json({ error: "Invalid scenarioName format or length" });
+  }
+  if (scenarioDescription && (typeof scenarioDescription !== "string" || scenarioDescription.length > 500)) {
+    return res.status(400).json({ error: "Invalid scenarioDescription format or length" });
+  }
+  if (operator && typeof operator === "string") {
+    const operatorGuard = runInputGuardrails(operator);
+    if (!operatorGuard.passed) {
+      return res.status(400).json({ error: "Operator validation failed: " + operatorGuard.reason });
+    }
+  }
+
+  const activeOperator = operator || "Operations Supervisor";
+
   // Run security and safety input guardrails for scenario name
   const nameGuardrail = runInputGuardrails(scenarioName);
   if (!nameGuardrail.passed) {
+    logAuditAction(activeOperator, "PREDICT_SCENARIO_FAIL", `Scenario name failed safety guardrails: "${scenarioName}"`);
     return res.json({
       success: false,
       scenarioName: scenarioName,
@@ -619,6 +872,8 @@ app.post("/api/predict-scenario", async (req, res) => {
     });
   }
   const sanitizedName = nameGuardrail.sanitizedMessage;
+
+  logAuditAction(activeOperator, "PREDICT_SCENARIO", `Initiated critical Multi-Agent simulation for scenario: "${sanitizedName}"`);
 
   // Run security and safety input guardrails for scenario description
   if (scenarioDescription) {
@@ -794,7 +1049,7 @@ const PLAYBOOK_MANUAL = [
 ];
 
 // Playbook RAG search and AI grounding endpoint
-app.post("/api/playbook-rag", async (req, res) => {
+app.post("/api/playbook-rag", csrfGuard, apiLimiter, async (req, res) => {
   const { query } = req.body;
 
   if (!query) {
@@ -869,7 +1124,8 @@ You must:
 });
 
 // Reset simulation state
-app.post("/api/reset-state", (req, res) => {
+app.post("/api/reset-state", csrfGuard, apiLimiter, (req, res) => {
+  logAuditAction("SYSTEM", "RESET_STATE", "Stadium metrics and active incident logs recalibrated to base parameters.");
   stadiumState = {
     stadiumName: "AT&T Stadium (Arlington, Texas) — FIFA 2026 Semifinal",
     attendanceCount: 78450,
